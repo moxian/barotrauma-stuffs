@@ -75,9 +75,9 @@ fn parse_prices(elem: roxmltree::Node) -> Prices {
 // this is like O(n^2) or something but i don't care
 fn dedup_things<T: Clone + Eq>(things: &[T]) -> Vec<(T, i32)> {
     let mut dedupped: Vec<(T, i32)> = vec![];
-    for thing in things.iter(){
-        if dedupped.iter().any(|(d, _)| d== thing){
-            continue
+    for thing in things.iter() {
+        if dedupped.iter().any(|(d, _)| d == thing) {
+            continue;
         }
         let count = things.iter().filter(|t| t == &thing).count();
         dedupped.push((thing.clone(), count as i32));
@@ -100,7 +100,7 @@ fn parse_fabricate(elem: roxmltree::Node) -> Fabricate {
         })
         .collect::<Vec<_>>();
 
-    let mut mats = dedup_things(&mats);
+    let mats = dedup_things(&mats);
     // they are NOT sorted in the UI
 
     let skills = elem
@@ -178,8 +178,43 @@ fn dump_prices(items: &[Item]) {
     }
 }
 
-fn dump_fabricate(items: &[Item], _localization: &Localization) -> std::io::Result<()> {
-    let out_path = Path::new("out/fabricate.txt");
+fn is_iconic_item(id: &str) -> bool {
+    let iconic_items = &[
+        "organicfiber",
+        "ballisticfiber",
+        "bodyarmor",
+        "divingsuit",
+        "divingmask",
+        "explosivespear",
+        "headset",
+        "healthscanner",
+        "incendiumgrenade",
+        "stungrenade",
+    ];
+    return iconic_items.contains(&id);
+}
+
+fn linkify_item(items: &[Item], id: &str, cnt: i32) -> String {
+    let name = items
+        .iter()
+        .find(|it| &it.id == id)
+        .unwrap()
+        .name
+        .as_ref()
+        .unwrap();
+    let mut line = if is_iconic_item(&id) {
+        format!("{{{{Hyperlink|{name}|30px|icon}}}}", name = name)
+    } else {
+        format!("{{{{Hyperlink|{name}|30px}}}}", name = name)
+    };
+    if cnt > 1 {
+        line += &format!(" (x{})", cnt);
+    }
+    line
+}
+
+fn dump_fabricate(items: &[Item], fab_type: &str) -> std::io::Result<()> {
+    let out_path = Path::new(&format!("out/fabricate_{}.txt", fab_type)).to_owned();
     std::fs::create_dir_all(out_path.parent().unwrap()).unwrap();
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -247,7 +282,7 @@ fn dump_fabricate(items: &[Item], _localization: &Localization) -> std::io::Resu
     };
 
     let make_item_line = |item: &Item, name_override: Option<&str>| {
-        debug!("{:?}", item.id);
+        // debug!("{:?}", item.id);
         let fabricate = item.fabricate.as_ref().unwrap();
         let fabricate_mat_names = fabricate
             .mats
@@ -364,7 +399,7 @@ fn dump_fabricate(items: &[Item], _localization: &Localization) -> std::io::Resu
         }) {
             continue;
         }
-        if fabricate.fabricator != "fabricator" {
+        if fabricate.fabricator != fab_type {
             continue;
         };
 
@@ -378,7 +413,11 @@ fn dump_fabricate(items: &[Item], _localization: &Localization) -> std::io::Resu
             if gc_exceptions.contains(&item.id.as_str()) {
                 continue;
             }
-            if item.fabricate.is_none() {
+            if let Some(f) = item.fabricate.as_ref() {
+                if f.fabricator != fab_type {
+                    continue;
+                }
+            } else {
                 continue;
             }
             if !item
@@ -401,7 +440,107 @@ fn dump_fabricate(items: &[Item], _localization: &Localization) -> std::io::Resu
                 canonical_line = Some(this_line);
             }
         }
-        file.write(canonical_line.unwrap().as_bytes())?;
+        if let Some(cl) = canonical_line {
+            file.write(cl.as_bytes())?;
+        } else {
+            // wrong fab type likely
+        }
+    }
+
+    file.write(
+        r#"|-
+|}
+"#
+        .as_bytes(),
+    )?;
+    Ok(())
+}
+
+// TERRIBLE TERRIBLE COPY-PASTE
+fn dump_deconstruct(items: &[Item]) -> std::io::Result<()> {
+    let out_path = Path::new("out/fabricate_deconstruct.txt");
+    std::fs::create_dir_all(out_path.parent().unwrap()).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(out_path)
+        .unwrap();
+
+    file.write(
+        r#"{| class="wikitable sortable" style="width: 30%; font-size: 90%;"
+! style="width: 40%" | Item
+! style="width: 20%" | Time (seconds)
+! style="width: 60%" | Deconstructs to
+"#
+        .as_bytes(),
+    )?;
+
+    let mut items = items.to_vec();
+    items.sort_by_key(|i| i.name.clone());
+
+    let blacklist = vec!["wire", "psilotoadegg", "balloonegg", "orangeboyegg"];
+
+    let make_item_line = |item: &Item, name_override: Option<&str>| {
+        // debug!("{:?}", item.id);
+        let decon = item.deconstruct.as_ref().unwrap();
+
+        let decon_line = decon
+            .mats
+            .iter()
+            .map(|(mat_id, cnt)| linkify_item(&items, mat_id, *cnt))
+            .collect::<Vec<_>>()
+            .join(" <br> ");
+
+        let display_name = if let Some(no) = name_override {
+            no.to_string()
+        } else {
+            let item_name = item.name.as_ref().unwrap().as_str();
+            let pic_name = if is_iconic_item(item.id.as_str()) {
+                format!("{}_icon", item_name)
+            } else if item.id == "smallmudraptoregg" {
+                // AAAAAA
+                "Mudraptor_Egg_Small".into()
+            } else {
+                item_name.to_string()
+            };
+            format!(
+                "[[File:{pic_name}.png| |50px|link={name}]] <br> [[{name}]]",
+                pic_name = pic_name,
+                name = item_name
+            )
+        };
+
+        let line = format!(
+            r#"|-
+| align="center" | {display_name}
+| align="center" | {time}
+| align="left-index" | {deconstruct}
+"#,
+            display_name = display_name,
+            time = decon.time,
+            deconstruct = decon_line,
+        );
+        line
+    };
+
+    for item in &items {
+        if blacklist.contains(&item.id.as_str()) {
+            continue;
+        }
+        let decon = match &item.deconstruct {
+            None => continue,
+            Some(f) => f,
+        };
+        if item.fabricate.is_some() {
+            continue; // only show non-constructible stuffs
+        }
+        if decon.mats.is_empty() {
+            continue;
+        }
+
+        let line = make_item_line(&item, None);
+        file.write(line.as_bytes())?;
     }
 
     file.write(
@@ -463,11 +602,8 @@ fn parse_localization(game_path: &Path) -> Localization {
     localization
 }
 
-fn stuff() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
-
-    let game_path = Path::new(r"D:\games\SteamLibrary\steamapps\common\Barotrauma");
-
+fn parse_items(game_path: impl AsRef<Path>) -> Vec<Item> {
+    let game_path = game_path.as_ref();
     let localization = parse_localization(game_path);
 
     let items_path = game_path.join("Content").join("Items");
@@ -481,9 +617,10 @@ fn stuff() {
                 .extension()
                 .map(|ext| ext.to_string_lossy() == "xml")
                 .unwrap_or(false)
+                && entry.path().file_name().unwrap().to_string_lossy() != "uniqueitems.xml"
         })
     {
-        log::debug!("{}", entry.path().display());
+        // log::debug!("{}", entry.path().display());
         let content = std::fs::read_to_string(entry.path()).unwrap();
         let doc = roxmltree::Document::parse(&content).unwrap();
         let item_container_elem = match doc
@@ -499,7 +636,7 @@ fn stuff() {
             .children()
             .filter(|elem| elem.is_element())
         {
-            log::debug!("{:?}", item_elem.attribute("identifier"));
+            // log::debug!("{:?}", item_elem.attribute("identifier"));
             let price_elem = item_elem
                 .children()
                 .filter(|p| p.tag_name().name() == "Price")
@@ -518,11 +655,17 @@ fn stuff() {
                 .next();
 
             let id = item_elem.attribute("identifier").unwrap().to_string();
-            let name: Option<String> = item_elem
-                .attribute("nameidentifier")
-                .and_then(|nid| localization.item_names.get(nid))
-                .or_else(|| localization.item_names.get(id.as_str()))
-                .map(|x| x.to_string());
+            let mut name: Option<String> = item_elem.attribute("name").map(|x| x.to_string());
+            if name.as_deref() == Some("") {
+                name = None;
+            }
+            if name.is_none() {
+                name = item_elem
+                    .attribute("nameidentifier")
+                    .and_then(|nid| localization.item_names.get(nid))
+                    .or_else(|| localization.item_names.get(id.as_str()))
+                    .map(|x| x.to_string());
+            };
 
             let item = Item {
                 name,
@@ -540,9 +683,20 @@ fn stuff() {
             items.push(item)
         }
     }
+    items
+}
+
+fn stuff() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+
+    let game_path = Path::new(r"D:\games\SteamLibrary\steamapps\common\Barotrauma");
+
+    let items = parse_items(game_path);
 
     dump_prices(&items);
-    dump_fabricate(&items, &localization).unwrap();
+    dump_fabricate(&items, "fabricator").unwrap();
+    dump_fabricate(&items, "medicalfabricator").unwrap();
+    dump_deconstruct(&items).unwrap();
 }
 
 fn main() {
