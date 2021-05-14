@@ -30,11 +30,22 @@ struct Fabricate {
     mats: Vec<(RequiredItem, i32)>,
     fabricator: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord)]
 enum RequiredItem {
     Id(String),
     Tag(String),
 }
+impl std::cmp::PartialOrd for RequiredItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(match (self, other) {
+            (RequiredItem::Id(a), RequiredItem::Id(b)) => a.cmp(b),
+            (RequiredItem::Tag(a), RequiredItem::Tag(b)) => a.cmp(b),
+            (RequiredItem::Id(_), RequiredItem::Tag(_)) => std::cmp::Ordering::Less,
+            (RequiredItem::Tag(_), RequiredItem::Id(_)) => std::cmp::Ordering::Greater,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Deconstruct {
     time: i32,
@@ -61,16 +72,17 @@ fn parse_prices(elem: roxmltree::Node) -> Prices {
     Prices { inner }
 }
 
-fn dedup_things<T: Clone + Eq + std::hash::Hash>(things: &[T]) -> Vec<(T, i32)> {
-    let mut things_deduped = HashMap::new();
-    for mat in things.iter() {
-        things_deduped.insert(
-            mat.clone(),
-            things.iter().filter(|x| x == &mat).count() as i32,
-        );
+// this is like O(n^2) or something but i don't care
+fn dedup_things<T: Clone + Eq>(things: &[T]) -> Vec<(T, i32)> {
+    let mut dedupped: Vec<(T, i32)> = vec![];
+    for thing in things.iter(){
+        if dedupped.iter().any(|(d, _)| d== thing){
+            continue
+        }
+        let count = things.iter().filter(|t| t == &thing).count();
+        dedupped.push((thing.clone(), count as i32));
     }
-    let things = things_deduped.into_iter().collect::<Vec<_>>();
-    things
+    dedupped
 }
 
 fn parse_fabricate(elem: roxmltree::Node) -> Fabricate {
@@ -89,13 +101,7 @@ fn parse_fabricate(elem: roxmltree::Node) -> Fabricate {
         .collect::<Vec<_>>();
 
     let mut mats = dedup_things(&mats);
-    // they are sorted in the UI
-    mats.sort_by(|(a, _), (b, _)| match (a, b) {
-        (RequiredItem::Id(a), RequiredItem::Id(b)) => a.cmp(b),
-        (RequiredItem::Tag(a), RequiredItem::Tag(b)) => a.cmp(b),
-        (RequiredItem::Id(_), RequiredItem::Tag(_)) => std::cmp::Ordering::Less,
-        (RequiredItem::Tag(_), RequiredItem::Id(_)) => std::cmp::Ordering::Greater,
-    });
+    // they are NOT sorted in the UI
 
     let skills = elem
         .children()
@@ -188,7 +194,7 @@ fn dump_fabricate(items: &[Item], _localization: &Localization) -> std::io::Resu
 ! style="width: 30%" | Materials to Craft 
 ! style="width: 10%" | Time (seconds)
 ! style="width: 15%" | Skill 
-! style="width: 30%" | Deconstructs to
+! style="width: 30%" | <abbr title="If different from the crafting recipe">Deconstructs to</abbr>
 "#
         .as_bytes(),
     )?;
@@ -262,7 +268,7 @@ fn dump_fabricate(items: &[Item], _localization: &Localization) -> std::io::Resu
         let decon_line = match item.deconstruct.as_ref() {
             None => "Not deconstructable".to_owned(),
             Some(d) => {
-                let fabricate_mat_ids = fabricate
+                let mut fabricate_mat_ids = fabricate
                     .mats
                     .iter()
                     .map(|(m, cnt)| match m {
@@ -270,7 +276,10 @@ fn dump_fabricate(items: &[Item], _localization: &Localization) -> std::io::Resu
                         RequiredItem::Tag(_) => ("not_found".into(), 99),
                     })
                     .collect::<Vec<_>>();
-                if fabricate_mat_ids == d.mats {
+                fabricate_mat_ids.sort();
+                let mut d_mats = d.mats.clone();
+                d_mats.sort();
+                if fabricate_mat_ids == d_mats {
                     "-".to_owned()
                 } else {
                     d.mats
@@ -359,7 +368,7 @@ fn dump_fabricate(items: &[Item], _localization: &Localization) -> std::io::Resu
             continue;
         };
 
-        let line = make_item_line(item, None);
+        let line = make_item_line(&item, None);
         file.write(line.as_bytes())?;
     }
 
@@ -379,7 +388,13 @@ fn dump_fabricate(items: &[Item], _localization: &Localization) -> std::io::Resu
             {
                 continue;
             }
-            let this_line = make_item_line(item, Some(gc_name));
+
+            let mut fake_item = item.clone();
+            if let Some(fab) = fake_item.fabricate.as_mut() {
+                fab.mats.sort();
+            }
+
+            let this_line = make_item_line(&fake_item, Some(gc_name));
             if let Some(cl) = canonical_line.as_ref() {
                 assert_eq!(&this_line, cl)
             } else {
