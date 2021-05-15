@@ -224,6 +224,8 @@ pub(crate) fn parse_items(game_path: impl AsRef<Path>) -> Vec<Item> {
                 prices: parse_prices(price_elem),
                 fabricate: fabricate_elem.map(|e| parse_fabricate(e)),
                 deconstruct: deconstruct_elem.map(|e| parse_deconstruct(e)),
+                has_inventory_icon: item_elem.children().find(|x| x.tag_name().name() == "InventoryIcon").is_some(),
+                has_sprite: item_elem.children().find(|x| x.tag_name().name() == "Sprite").is_some(),
             };
             items.push(item)
         }

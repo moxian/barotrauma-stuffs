@@ -15,6 +15,8 @@ struct Item {
     prices: Prices,
     fabricate: Option<Fabricate>,
     deconstruct: Option<Deconstruct>,
+    has_inventory_icon: bool,
+    has_sprite: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -1,7 +1,7 @@
 use crate::{Item, RequiredItem};
 
-use std::path::Path;
 use std::io::Write;
+use std::path::Path;
 
 pub(crate) fn dump_prices(items: &[Item]) {
     let out_path = Path::new("out/items_prices.csv");
@@ -39,31 +39,14 @@ pub(crate) fn dump_prices(items: &[Item]) {
 // Wiki is inconsisntent in whether ItemName.png represents the former or the latter
 // So sometimes we need to postfix the filename with _icon to get the in-inventory look.
 // This function denotes the several exeptions that do require such postfixing.
-fn is_iconic_item(id: &str) -> bool {
-    let iconic_items = &[
-        "organicfiber",
-        "ballisticfiber",
-        "bodyarmor",
-        "divingsuit",
-        "divingmask",
-        "explosivespear",
-        "headset",
-        "healthscanner",
-        "incendiumgrenade",
-        "stungrenade",
-    ];
-    return iconic_items.contains(&id);
+fn is_iconic_item(item: &Item) -> bool {
+    return false;
 }
 
 fn linkify_item(items: &[Item], id: &str, cnt: i32) -> String {
-    let name = items
-        .iter()
-        .find(|it| &it.id == id)
-        .unwrap()
-        .name
-        .as_ref()
-        .unwrap();
-    let mut line = if is_iconic_item(&id) {
+    let item = items.iter().find(|it| &it.id == id).unwrap();
+    let name = item.name.as_deref().unwrap();
+    let mut line = if is_iconic_item(&item) {
         format!("{{{{Hyperlink|{name}|30px|icon}}}}", name = name)
     } else {
         format!("{{{{Hyperlink|{name}|30px}}}}", name = name)
@@ -95,19 +78,6 @@ pub(crate) fn dump_fabricate(items: &[Item], fab_type: &str) -> std::io::Result<
         .as_bytes(),
     )?;
 
-    let iconic_items: Vec<&str> = vec![
-        "organicfiber",
-        "ballisticfiber",
-        "bodyarmor",
-        "divingsuit",
-        "divingmask",
-        "explosivespear",
-        "headset",
-        "healthscanner",
-        "incendiumgrenade",
-        "stungrenade",
-    ];
-
     let mut items = items.to_vec();
     items.sort_by_key(|i| i.name.clone());
 
@@ -123,25 +93,6 @@ pub(crate) fn dump_fabricate(items: &[Item], fab_type: &str) -> std::io::Result<
     ];
     let blacklist = vec!["lightcomponent90"];
 
-    let linkify_item = |id: &str, cnt: i32| -> String {
-        let name = items
-            .iter()
-            .find(|it| &it.id == id)
-            .unwrap()
-            .name
-            .as_ref()
-            .unwrap();
-        let mut line = if iconic_items.contains(&id) {
-            format!("{{{{Hyperlink|{name}|30px|icon}}}}", name = name)
-        } else {
-            format!("{{{{Hyperlink|{name}|30px}}}}", name = name)
-        };
-        if cnt > 1 {
-            line += &format!(" (x{})", cnt);
-        }
-        line
-    };
-
     let make_item_line = |item: &Item, name_override: Option<&str>| {
         // debug!("{:?}", item.id);
         let fabricate = item.fabricate.as_ref().unwrap();
@@ -149,11 +100,11 @@ pub(crate) fn dump_fabricate(items: &[Item], fab_type: &str) -> std::io::Result<
             .mats
             .iter()
             .map(|(m, cnt)| match m {
-                RequiredItem::Id(id) => linkify_item(id, *cnt),
+                RequiredItem::Id(id) => linkify_item(&items, id, *cnt),
                 RequiredItem::Tag(tag) => match tag.as_str() {
                     "wire" => {
                         // "{{{{Hyperlink| Wire|30px|}}}} (any)".to_string(),
-                        linkify_item("wire", *cnt)
+                        linkify_item(&items, "wire", *cnt)
                     }
                     _ => panic!("{:?}", tag),
                 },
@@ -180,7 +131,7 @@ pub(crate) fn dump_fabricate(items: &[Item], fab_type: &str) -> std::io::Result<
                 } else {
                     d.mats
                         .iter()
-                        .map(|(mat_id, cnt)| linkify_item(mat_id, *cnt))
+                        .map(|(mat_id, cnt)| linkify_item(&items, mat_id, *cnt))
                         .collect::<Vec<_>>()
                         .join(" <br> ")
                 }
@@ -210,7 +161,7 @@ pub(crate) fn dump_fabricate(items: &[Item], fab_type: &str) -> std::io::Result<
             no.to_string()
         } else {
             let item_name = item.name.as_ref().unwrap().as_str();
-            let pic_name = if iconic_items.contains(&item.id.as_str()) {
+            let pic_name = if is_iconic_item(&item) {
                 format!("{}_icon", item_name)
             } else {
                 item_name.to_string()
@@ -358,12 +309,14 @@ pub(crate) fn dump_deconstruct(items: &[Item]) -> std::io::Result<()> {
             no.to_string()
         } else {
             let item_name = item.name.as_ref().unwrap().as_str();
-            let pic_name = if is_iconic_item(item.id.as_str()) {
+            let pic_name = if is_iconic_item(&item) {
                 format!("{}_icon", item_name)
             } else if item.id == "smallmudraptoregg" {
                 // AAAAAA
                 "Mudraptor_Egg_Small".into()
-            } else {
+            } else if item.id == "peanutegg" {
+                "Strange Eggs".into()
+            }else {
                 item_name.to_string()
             };
             format!(
