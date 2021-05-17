@@ -27,6 +27,7 @@ dependencies = [
  "csv",
  "env_logger",
  "log",
+ "regex",
  "roxmltree",
  "walkdir",
 ]

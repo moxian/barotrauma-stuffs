@@ -1,10 +1,10 @@
-mod parse;
 mod dump;
+mod parse;
 
 #[allow(unused_imports)]
 use log::{debug, info};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -17,12 +17,20 @@ struct Item {
     deconstruct: Option<Deconstruct>,
     has_inventory_icon: bool,
     has_sprite: bool,
+    level_resource: Option<LevelResource>,
+}
+
+#[derive(Debug, Clone)]
+struct LevelResource{
+    comonness_default: f32,
+    comonness: HashMap<String, f32>,
 }
 
 #[derive(Debug, Clone)]
 struct Prices {
-    // kind -> multiplier
-    inner: BTreeMap<String, f32>,
+    base_price: i32,
+    // location -> (multiplier, is_sold)
+    locations: BTreeMap<String, (f32, bool)>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,19 +63,42 @@ struct Deconstruct {
     mats: Vec<(String, i32)>,
 }
 
+struct Localization {
+    entries: HashMap<String, String>,
+}
+impl Localization {
+    fn item_name_opt(&self, id: &str) -> Option<&str> {
+        self.entries
+            .get(&format!("entityname.{}", id))
+            .map(|s| s.as_str())
+    }
+    fn item_description(&self, id: &str) -> &str {
+        self.entries
+            .get(&format!("entitydescription.{}", id))
+            .unwrap()
+            .as_str()
+    }
+}
 
+struct Db {
+    version: String,
+    items: Vec<Item>,
+    localization: Localization,
+}
 
 fn stuff() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
 
     let game_path = Path::new(r"D:\games\SteamLibrary\steamapps\common\Barotrauma");
 
-    let items = parse::parse_items(game_path);
+    let db = parse::parse_db(game_path);
 
-    dump::dump_prices(&items);
-    dump::dump_fabricate(&items, "fabricator").unwrap();
-    dump::dump_fabricate(&items, "medicalfabricator").unwrap();
-    dump::dump_deconstruct(&items).unwrap();
+    dump::dump_prices(&db.items);
+    dump::dump_fabricate(&db.items, "fabricator").unwrap();
+    dump::dump_fabricate(&db.items, "medicalfabricator").unwrap();
+    dump::dump_deconstruct(&db.items).unwrap();
+
+    dump::dump_infoboxes(&db);
 }
 
 fn main() {

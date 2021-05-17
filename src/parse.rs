@@ -1,11 +1,27 @@
-use crate::{Item, Prices, Fabricate, RequiredItem, Deconstruct};
+use crate::{Db, Deconstruct, Fabricate, Item, LevelResource, Localization, Prices, RequiredItem};
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-struct Localization {
-    item_names: HashMap<String, String>,
-    skill_names: HashMap<String, String>,
+pub(crate) fn parse_db(game_path: &Path) -> Db {
+    let version = parse_version(game_path);
+    let localization = parse_localization(game_path);
+    let items = parse_items(game_path, &localization);
+    Db {
+        version,
+        items,
+        localization,
+    }
+}
+
+pub(crate) fn parse_version(game_path: &Path) -> String {
+    let path = game_path.join("Barotrauma.deps.json");
+    let content = std::fs::read_to_string(path).unwrap();
+    let re = regex::Regex::new(r#""Barotrauma/([^"]+)""#).unwrap();
+    for cap in re.captures_iter(&content) {
+        return cap[1].to_string();
+    }
+    panic!("this should never happen - couldn't extract version");
 }
 
 fn parse_localization(game_path: &Path) -> Localization {
@@ -24,53 +40,72 @@ fn parse_localization(game_path: &Path) -> Localization {
         .unwrap();
 
     let mut localization = Localization {
-        item_names: HashMap::new(),
-        skill_names: HashMap::new(),
+        entries: HashMap::new(),
     };
 
     for item in infotexts_elem.children().filter(|x| x.is_element()) {
         let tag = item.tag_name().name();
-        if tag.starts_with("entityname.") {
-            let entity_id = tag.rsplit(".").next().unwrap();
-            let name = item
-                .children()
-                .find(|x| x.is_text())
-                .unwrap()
-                .text()
-                .unwrap();
-            localization
-                .item_names
-                .insert(entity_id.to_string(), name.to_string());
-        } else if tag.starts_with("skillname.") {
-            let skill_id = tag.rsplit(".").next().unwrap();
-            let name = item
-                .children()
-                .find(|x| x.is_text())
-                .unwrap()
-                .text()
-                .unwrap();
-            localization
-                .skill_names
-                .insert(skill_id.to_string(), name.to_string());
+        let content = match item.children().find(|x| x.is_text()) {
+            Some(x) => x,
+            None => continue,
         }
+        .text()
+        .unwrap();
+        localization
+            .entries
+            .insert(tag.to_string(), content.to_string());
     }
 
     localization
 }
 
+fn parse_bool(s: &str) -> bool {
+    match s {
+        "true" => true,
+        "false" => false,
+        _ => panic!(),
+    }
+}
+
 fn parse_prices(elem: roxmltree::Node) -> Prices {
     let mut inner = BTreeMap::new();
+    let base_price = elem.attribute("baseprice").unwrap().parse::<i32>().unwrap();
+
+    // Note: e.g. wrench and diving knife are lacking both "soldeverywhere" and "sold", yet they are common
+    let is_sold_everywhere = elem.attribute("soldeverywhere").map(|x| parse_bool(x));
+
     for child in elem.children().filter(|x| x.tag_name().name() == "Price") {
+        for attr in child.attributes() {
+            if !["locationtype", "multiplier", "sold", "minavailable"].contains(&attr.name()) {
+                println!("{:?}", attr);
+            }
+        }
+        let has_min = child.attribute("minavailable").is_some();
+        let mut is_sold = child.attribute("sold").map(|x| parse_bool(x));
+        if has_min || is_sold_everywhere == Some(true) {
+            assert!(is_sold != Some(false));
+            is_sold = Some(true);
+        }
+        // if neither of the "sold" "minavailable", "soldeverywhere" are present, then the item *is* sold: see, e.g. wrenches
+        if !has_min && is_sold_everywhere == None && is_sold == None {
+            is_sold = Some(true);
+        }
+        let is_sold = is_sold.unwrap();
+
+        let multiplier = child
+            .attribute("multiplier")
+            .unwrap_or("1.0")
+            .parse()
+            .unwrap();
         inner.insert(
             child.attribute("locationtype").unwrap().to_string(),
-            child
-                .attribute("multiplier")
-                .unwrap_or("1.0")
-                .parse()
-                .unwrap(),
+            (multiplier, is_sold),
         );
     }
-    Prices { inner }
+    Prices {
+        base_price,
+        locations: inner,
+    }
 }
 
 // this is like O(n^2) or something but i don't care
@@ -102,6 +137,7 @@ fn parse_fabricate(elem: roxmltree::Node) -> Fabricate {
         .collect::<Vec<_>>();
 
     let mats = dedup_things(&mats);
+    // let mats = vec![];
     // they are NOT sorted in the UI
 
     let skills = elem
@@ -139,17 +175,45 @@ fn parse_deconstruct(elem: roxmltree::Node) -> Deconstruct {
         .filter(|x| x.tag_name().name() == "Item" || x.tag_name().name() == "RequiredItem")
         .map(|e| e.attribute("identifier").unwrap().to_string())
         .collect::<Vec<_>>();
-    let mut mats = dedup_things(&mats);
-    mats.sort();
 
     let time = elem.attribute("time").unwrap().parse::<i32>().unwrap();
+
+    let mats = dedup_things(&mats);
 
     Deconstruct { time, mats }
 }
 
-pub(crate) fn parse_items(game_path: impl AsRef<Path>) -> Vec<Item> {
+fn parse_level_resource(elem: roxmltree::Node) -> LevelResource {
+    let mut comonness_default = None;
+    let mut comonnesses = HashMap::new();
+    for item in elem
+        .children()
+        .filter(|x| x.tag_name().name() == "Commonness")
+    {
+        let com = item
+            .attribute("commonness")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let leveltype = item.attribute("leveltype");
+        match leveltype {
+            Some(lt) => {
+                comonnesses.insert(lt.to_string(), com);
+            }
+            None => {
+                assert_eq!(comonness_default, None);
+                comonness_default = Some(com);
+            }
+        };
+    }
+    LevelResource {
+        comonness_default: comonness_default.unwrap(),
+        comonness: comonnesses,
+    }
+}
+
+pub(crate) fn parse_items(game_path: impl AsRef<Path>, localization: &Localization) -> Vec<Item> {
     let game_path = game_path.as_ref();
-    let localization = parse_localization(game_path);
 
     let items_path = game_path.join("Content").join("Items");
     let mut items: Vec<Item> = vec![];
@@ -207,10 +271,14 @@ pub(crate) fn parse_items(game_path: impl AsRef<Path>) -> Vec<Item> {
             if name.is_none() {
                 name = item_elem
                     .attribute("nameidentifier")
-                    .and_then(|nid| localization.item_names.get(nid))
-                    .or_else(|| localization.item_names.get(id.as_str()))
+                    .and_then(|nid| localization.item_name_opt(nid))
+                    .or_else(|| localization.item_name_opt(id.as_str()))
                     .map(|x| x.to_string());
             };
+            let level_resource = item_elem
+                .children()
+                .find(|x| x.tag_name().name() == "LevelResource")
+                .map(|elem| parse_level_resource(elem));
 
             let item = Item {
                 name,
@@ -224,9 +292,17 @@ pub(crate) fn parse_items(game_path: impl AsRef<Path>) -> Vec<Item> {
                 prices: parse_prices(price_elem),
                 fabricate: fabricate_elem.map(|e| parse_fabricate(e)),
                 deconstruct: deconstruct_elem.map(|e| parse_deconstruct(e)),
-                has_inventory_icon: item_elem.children().find(|x| x.tag_name().name() == "InventoryIcon").is_some(),
-                has_sprite: item_elem.children().find(|x| x.tag_name().name() == "Sprite").is_some(),
+                has_inventory_icon: item_elem
+                    .children()
+                    .find(|x| x.tag_name().name() == "InventoryIcon")
+                    .is_some(),
+                has_sprite: item_elem
+                    .children()
+                    .find(|x| x.tag_name().name() == "Sprite")
+                    .is_some(),
+                level_resource,
             };
+
             items.push(item)
         }
     }

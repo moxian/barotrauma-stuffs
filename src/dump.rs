@@ -1,4 +1,4 @@
-use crate::{Item, RequiredItem};
+use crate::{Db, Item, RequiredItem};
 
 use std::io::Write;
 use std::path::Path;
@@ -15,7 +15,7 @@ pub(crate) fn dump_prices(items: &[Item]) {
     let mut writer = csv::Writer::from_writer(out_file);
     let all_locations = items
         .iter()
-        .flat_map(|item| item.prices.inner.keys())
+        .flat_map(|item| item.prices.locations.keys())
         .collect::<std::collections::BTreeSet<_>>();
     let all_locations = all_locations.into_iter().collect::<Vec<_>>();
     writer
@@ -28,7 +28,11 @@ pub(crate) fn dump_prices(items: &[Item]) {
         for loc in &all_locations {
             record.push(format!(
                 "{}",
-                item.prices.inner.get(loc.as_str()).unwrap_or(&1.0)
+                item.prices
+                    .locations
+                    .get(loc.as_str())
+                    .map(|x| x.0)
+                    .unwrap_or(1.0)
             ));
         }
         writer.write_record(record).unwrap();
@@ -43,13 +47,17 @@ fn is_iconic_item(item: &Item) -> bool {
     return false;
 }
 
-fn linkify_item(items: &[Item], id: &str, cnt: i32) -> String {
+fn linkify_item(items: &[Item], id: &str, cnt: i32, size: Option<i32>) -> String {
     let item = items.iter().find(|it| &it.id == id).unwrap();
     let name = item.name.as_deref().unwrap();
-    let mut line = if is_iconic_item(&item) {
-        format!("{{{{Hyperlink|{name}|30px|icon}}}}", name = name)
+    let mut line = if let Some(size) = size {
+        format!(
+            "{{{{Hyperlink|{name}|{size}px}}}}",
+            name = name,
+            size = size
+        )
     } else {
-        format!("{{{{Hyperlink|{name}|30px}}}}", name = name)
+        format!("{{{{Hyperlink|{name}}}}}", name = name)
     };
     if cnt > 1 {
         line += &format!(" (x{})", cnt);
@@ -100,11 +108,11 @@ pub(crate) fn dump_fabricate(items: &[Item], fab_type: &str) -> std::io::Result<
             .mats
             .iter()
             .map(|(m, cnt)| match m {
-                RequiredItem::Id(id) => linkify_item(&items, id, *cnt),
+                RequiredItem::Id(id) => linkify_item(&items, id, *cnt, Some(30)),
                 RequiredItem::Tag(tag) => match tag.as_str() {
                     "wire" => {
                         // "{{{{Hyperlink| Wire|30px|}}}} (any)".to_string(),
-                        linkify_item(&items, "wire", *cnt)
+                        linkify_item(&items, "wire", *cnt, Some(30))
                     }
                     _ => panic!("{:?}", tag),
                 },
@@ -131,7 +139,7 @@ pub(crate) fn dump_fabricate(items: &[Item], fab_type: &str) -> std::io::Result<
                 } else {
                     d.mats
                         .iter()
-                        .map(|(mat_id, cnt)| linkify_item(&items, mat_id, *cnt))
+                        .map(|(mat_id, cnt)| linkify_item(&items, mat_id, *cnt, Some(30)))
                         .collect::<Vec<_>>()
                         .join(" <br> ")
                 }
@@ -253,13 +261,13 @@ pub(crate) fn dump_fabricate(items: &[Item], fab_type: &str) -> std::io::Result<
             }
         }
         if let Some(cl) = canonical_line {
-            file.write(cl.as_bytes())?;
+            file.write_all(cl.as_bytes())?;
         } else {
             // wrong fab type likely
         }
     }
 
-    file.write(
+    file.write_all(
         r#"|-
 |}
 "#
@@ -301,7 +309,7 @@ pub(crate) fn dump_deconstruct(items: &[Item]) -> std::io::Result<()> {
         let decon_line = decon
             .mats
             .iter()
-            .map(|(mat_id, cnt)| linkify_item(&items, mat_id, *cnt))
+            .map(|(mat_id, cnt)| linkify_item(&items, mat_id, *cnt, Some(30)))
             .collect::<Vec<_>>()
             .join(" <br> ");
 
@@ -316,7 +324,7 @@ pub(crate) fn dump_deconstruct(items: &[Item]) -> std::io::Result<()> {
                 "Mudraptor_Egg_Small".into()
             } else if item.id == "peanutegg" {
                 "Strange Eggs".into()
-            }else {
+            } else {
                 item_name.to_string()
             };
             format!(
@@ -355,14 +363,191 @@ pub(crate) fn dump_deconstruct(items: &[Item]) -> std::io::Result<()> {
         }
 
         let line = make_item_line(&item, None);
-        file.write(line.as_bytes())?;
+        file.write_all(line.as_bytes())?;
     }
 
-    file.write(
+    file.write_all(
         r#"|-
 |}
 "#
         .as_bytes(),
     )?;
     Ok(())
+}
+
+fn format_mineral(item: &Item) -> String {
+    let mut fields: Vec<(String, String)> = vec![];
+    // fields.("{{Gatherable Materials
+    fields.push(("name".into(), item.name.as_ref().unwrap().to_string()));
+    if item.tags.contains(&"ore".to_string()) {
+        fields.push(("kind".into(), "mineral".into()));
+    } else {
+        panic!();
+    }
+    let lr = item.level_resource.as_ref().unwrap();
+    if lr.comonness.len() == 0 {
+        fields.push(("comonness".into(), lr.comonness_default.to_string()))
+    } else {
+        for (level, biome) in &[
+            ("coldcaverns", "coldcaverns"),
+            ("ridgebasic", "europanridge"),
+            ("plateaubasic", "theaphoticplateau"),
+            ("greatseabasic", "thegreatsea"),
+            ("wastesbasic", "hydrothermalwastes"),
+        ] {
+            let com = if level != &"coldcaverns" {
+                lr.comonness.get(*level).unwrap()
+            } else {
+                lr.comonness.get(*level).unwrap_or(&lr.comonness_default)
+            };
+            fields.push((format!("comonness_{}", biome), (com * 100.0).round().to_string()));
+        }
+    }
+
+    let mut result = String::new();
+    result.push_str("{{Gatherable Materials\n");
+    result.push_str(
+        &fields
+            .iter()
+            .map(|(k, v)| format!("| {} = {}", k, v))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    result.push_str("\n}}");
+    result
+}
+
+fn format_infobox(item: &Item, db: &Db) -> Option<String> {
+    let name = item.name.clone().unwrap();
+    let mut category = None;
+    if item.tags.contains(&"ore".into()) {
+        category = Some("ore");
+    }
+    let category = category?;
+
+    let mut fields: Vec<(String, String)> = vec![];
+    fields.push(("identifier".into(), item.id.clone()));
+    fields.push(("name".into(), name.clone()));
+    if category == "ore" {
+        fields.push(("image".into(), format!("{}.png", name)));
+        // fields.push(("caption".into(), "Mined mineral".into()));
+        fields.push((
+            "caption".into(),
+            format!("''{}''", db.localization.item_description(&item.id)),
+        ));
+        fields.push(("image2".into(), format!("{}_Mineral.png", name)));
+        fields.push(("caption2".into(), "Sprite in the environment".into()));
+        fields.push(("icon".into(), format!("{}.png", name)));
+        fields.push(("sprite".into(), format!("{}_Mineral.png", name)));
+    } else {
+        fields.push(("image".into(), format!("{}.png", name)));
+        fields.push(("caption".into(), "Inventory icon".into()));
+        fields.push(("image2".into(), format!("{}_sprite.png", name)));
+        fields.push(("caption2".into(), "Sprite".into()));
+        fields.push(("icon".into(), format!("{}.png", name)));
+        fields.push(("sprite".into(), format!("{}_sprite.png", name)));
+    }
+
+    //
+    // fields.push(("type".into(), category.into()));
+    //
+    fields.push(("baseprice".into(), format!("{}", item.prices.base_price)));
+
+    let is_sold_anywhere = item.prices.locations.values().any(|(_, is_sold)| *is_sold);
+    if !is_sold_anywhere {
+        fields.push(("unbuyable".into(), "true".into()));
+    }
+    for loc in &["outpost", "city", "research", "military", "mine"] {
+        let (mult, is_sold_here) = item.prices.locations.get(&loc.to_string()).unwrap();
+        fields.push((format!("{}multiplier", loc), format!("{}", mult)));
+        if is_sold_anywhere && !is_sold_here {
+            fields.push((format!("{}unbuyable", loc), "true".into()));
+        }
+    }
+
+    if category == "ore" {
+        fields.push(("noreq".into(), "Yes".into()));
+    } else {
+        panic!();
+    }
+
+    //
+    if let Some(fab) = item.fabricate.as_ref() {
+        fields.push(("fabricator".into(), "Yes".to_string())); // sadly required
+        fields.push(("fabricatedamount".into(), fab.out_amount.to_string()));
+        fields.push(("fabricatortime".into(), fab.time.to_string()));
+        // TODO: only first skill is used. Others are ignored (only relevant for health scanner?)
+        assert!(fab.skills.len() <= 1);
+        if let Some((skill, level)) = fab.skills.get(0) {
+            fields.push(("fabricatorskill".into(), skill.to_string()));
+            fields.push(("fabricatorskilllevel".into(), level.to_string()));
+        }
+        assert_eq!(fab.fabricator, "fabricator");
+        let mats = fab
+            .mats
+            .iter()
+            .map(|(mat, cnt)| match mat {
+                RequiredItem::Id(id) => linkify_item(&db.items, id, *cnt, None),
+                RequiredItem::Tag(tag) => match tag.as_str() {
+                    "wire" => linkify_item(&db.items, "wire", *cnt, None),
+                    _ => panic!("{:?}", tag),
+                },
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fields.push(("fabricatormaterials".into(), mats));
+    }
+
+    if let Some(decon) = item.deconstruct.as_ref() {
+        fields.push(("deconstructor".into(), "Yes".to_string())); // sadly required
+        fields.push(("deconstructortime".into(), decon.time.to_string()));
+        let mats = decon
+            .mats
+            .iter()
+            .map(|(mat_id, cnt)| linkify_item(&db.items, mat_id, *cnt, None))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fields.push(("deconstructormaterials".into(), mats));
+    }
+
+    let mut result = String::new();
+    if category == "ore" {
+        result += "{{Main|Minerals}}\n\n";
+        result += &format!("{{{{Version|{}}}}}\n", db.version);
+    }
+    result += &"{{Items infobox";
+    for (k, v) in fields {
+        result += &format!("\n| {} = {}", k, v);
+    }
+    result += "\n}}";
+    if category == "ore" {
+        result += "\n";
+        result += &format_mineral(item);
+    }
+    Some(result)
+}
+
+pub(crate) fn dump_infoboxes(db: &Db) {
+    let out_path = Path::new("out/infoboxes.txt");
+    std::fs::create_dir_all(out_path.parent().unwrap()).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(out_path)
+        .unwrap();
+    for item in &db.items {
+        let name = match item.name.as_ref() {
+            Some(n) => n,
+            None => continue,
+        };
+        let ib = match format_infobox(item, &db) {
+            Some(x) => x,
+            None => continue,
+        };
+
+        file.write_all(format!("\n\n ===  {}  ===  \n\n", name).as_bytes())
+            .unwrap();
+        file.write_all(ib.as_bytes()).unwrap();
+    }
 }
